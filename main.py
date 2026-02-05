@@ -5,6 +5,8 @@ import time
 import requests
 import unicodedata
 import re
+import io
+from datetime import datetime
 from datetime import timedelta
 from threading import Thread
 from flask import Flask
@@ -352,6 +354,117 @@ async def ban_system(client, message):
         )
 
 # --- USER COMMANDS ---
+
+
+@app.on_message(filters.command("data") & (filters.group | filters.private))
+async def data_handler(client, message):
+    # 1. Sudo Check
+    if not await check_sudo(message.from_user.id):
+        return await del_cmd(message)
+
+    parts = message.text.split()
+    # Check if target is specified (Reply, ID, or Username)
+    target = await get_target_user(client, message, parts)
+
+    # --- CASE 1: SPECIFIC USER DATA ---
+    if target or (len(parts) > 1 and not parts[1].isdigit()):
+        # If get_target_user failed but there's input, target might be invalid
+        if not target:
+            return await message.reply("<b>⚠️ ᴜsᴇʀ ɴᴏᴛ ғᴏᴜɴᴅ!</b>")
+
+        u_db = users_col.find_one({"user_id": target.id})
+        m_admin = get_mention(message.from_user.id, message.from_user.first_name)
+        
+        # UI/UX Strings
+        if u_db:
+            badge, stars, r_name = get_rank_info(u_db.get('coins', 0))
+            status = "🔴 ʙᴀɴɴᴇᴅ" if u_db.get("is_banned", 0) == 1 else "🟢 ᴜɴʙᴀɴɴᴇᴅ"
+            pocket = u_db.get('coins', 0)
+            vault = u_db.get('vault', 0)
+            # Date can be formatted from last_claim or current
+            date_str = datetime.now().strftime("%d-%m-%Y")
+        else:
+            # Fallback for non-DB users
+            badge, stars, r_name = ("⚪️", "🌑", "ɴᴏᴛ ɪɴ ᴅʙ")
+            status = "🟢 ᴜɴʙᴀɴɴᴇᴅ"
+            pocket = 0
+            vault = 0
+            date_str = "ɴ/ᴀ"
+
+        caption = (
+            f"<b>┏━━「 👤 ᴜsᴇʀ ɪɴғᴏ 」━━┓</b>\n"
+            f"<b>┃ 👤 ᴜsᴇʀ: {get_mention(target.id, target.first_name)}</b>\n"
+            f"<b>┃ 🆔 ɪᴅ: <code>{target.id}</code></b>\n"
+            f"<b>┃ 📛 ɴᴀᴍᴇ: {target.first_name} {target.last_name or ''}</b>\n"
+            f"<b>┃ 📧 ᴜsᴇʀ: @{target.username or 'ɴᴏɴᴇ'}</b>\n"
+            f"<b>┣━━━━━━━━━━━━━━</b>\n"
+            f"<b>┃ ᴘᴏᴄᴋᴇᴛ: {pocket}</b>\n"
+            f"<b>┃ ᴠᴀᴜʟᴛ: {vault}</b>\n"
+            f"<b>┃ ʙᴀᴅɢᴇ: {badge} ({r_name})</b>\n"
+            f"<b>┃ sᴛᴀʀs: {stars}</b>\n"
+            f"<b>┃ sᴛᴀᴛᴜs: {status}</b>\n"
+            f"<b>┃ ᴅᴀᴛᴇ: {date_str}</b>\n"
+            f"<b>┗━━━━━━━━━━━━━━┛</b>"
+        )
+
+        try:
+            # Try to get profile photo
+            photos = [p async for p in client.get_chat_photos(target.id, limit=1)]
+            if photos:
+                await message.reply_photo(photos[0].file_id, caption=caption)
+            else:
+                await message.reply(caption)
+        except:
+            await message.reply(caption)
+        return
+
+    # --- CASE 2: ALL USERS TXT GENERATION ---
+    await del_cmd(message)
+    status_msg = await message.reply("<b>⏳ ɢᴇɴᴇʀᴀᴛɪɴɢ ᴅᴀᴛᴀ ғɪʟᴇ...</b>")
+    
+    all_users = list(users_col.find())
+    total_users = len(all_users)
+    banned_users = users_col.count_documents({"is_banned": 1})
+    
+    output = f"TOTAL USERS: {total_users}\nBANNED USERS: {banned_users}\n"
+    output += "="*30 + "\n\n"
+    
+    for u in all_users:
+        u_id = u.get("user_id")
+        name = u.get("full_name", "Unknown")
+        uname = u.get("username", "None")
+        coins = u.get("coins", 0)
+        vault = u.get("vault", 0)
+        is_ban = "Banned" if u.get("is_banned", 0) == 1 else "Unban"
+        badge, stars, _ = get_rank_info(coins)
+        
+        output += (
+            f"ᴜɪᴅ: {u_id}\n"
+            f"ɴᴀᴍᴇ: {name}\n"
+            f"ᴜsᴇʀ: @{uname}\n"
+            f"ᴘᴏᴄᴋᴇᴛ: {coins}\n"
+            f"ᴠᴀᴜʟᴛ: {vault}\n"
+            f"ʙᴀᴅɢᴇ: {badge}\n"
+            f"sᴛᴀʀs: {stars}\n"
+            f"sᴛᴀᴛᴜs: {is_ban}\n"
+            f"ᴅᴀᴛᴇ: {datetime.now().strftime('%Y-%m-%d')}\n"
+            f"{'-'*20}\n"
+        )
+
+    # Use io.BytesIO to create file in memory
+    f = io.BytesIO(output.encode())
+    f.name = f"DX_Users_Data_{datetime.now().strftime('%d_%m')}.txt"
+    
+    caption = (
+        f"<b>┏━━「 📂 ᴅᴀᴛᴀʙᴀsᴇ ᴇxᴘᴏʀᴛ 」━━┓</b>\n"
+        f"<b>┃ 📊 ᴛᴏᴛᴀʟ: {total_users}</b>\n"
+        f"<b>┃ 🚫 ʙᴀɴɴᴇᴅ: {banned_users}</b>\n"
+        f"<b>┃ 🛡️ ᴀᴅᴍɪɴ: {get_mention(message.from_user.id, message.from_user.first_name)}</b>\n"
+        f"<b>┗━━━━━━━━━━━━━━┛</b>"
+    )
+    
+    await client.send_document(message.chat.id, f, caption=caption)
+    await status_msg.delete()
 
 @app.on_message(filters.command("claim") & filters.group)
 async def daily_claim(client, message):
