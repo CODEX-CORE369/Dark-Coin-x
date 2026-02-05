@@ -112,37 +112,58 @@ async def get_target_user(client, message, parts):
                 except: pass
     return None
 
+import unicodedata
+import re
+
+# Character mapping to handle Leet Speak and visual substitutes
+# Moving this outside the function prevents the 'UnboundLocalError' and improves speed
+CHARACTER_MAP = {
+    '0': 'o', '4': 'a', '@': 'a', '8': 'b', '3': 'e', '1': 'i', '!': 'i', 
+    '$': 's', '7': 't', '(': 'c', '[': 'c', '{': 'c', '©': 'c', 
+    '|)': 'd', '|>': 'd', 'cl': 'd', 'v': 'v', '×': 'x', 'к': 'k', 'ʀ': 'r'
+}
+
 def advanced_cleaner(text):
-    """সর্বোচ্চ পর্যায়ের ক্লিনিং অ্যালগরিদম: স্টাইলিশ ফন্ট, গ্লিচ, লেটার রিপ্লেসমেন্ট এবং সিম্বল হ্যান্ডেল করে।"""
+    """
+    Advanced cleaning algorithm: Handles stylized fonts, glitch text (Zalgo), 
+    symbol replacements, and hidden characters.
+    """
     if not text:
         return ""
     
-        text = unicodedata.normalize('NFKC', text).lower()
+    # 1. Normalize stylized fonts (e.g., ᴅᴀʀᴋ, 𝖉𝖆𝖗𝖐, 𝓭𝓪𝓻𝓴) to standard Latin
+    text = unicodedata.normalize('NFKC', text).lower()
     
-        mapping = {
-        '0': 'o', '4': 'a', '@': 'a', '8': 'b', '3': 'e', '1': 'i', '!': 'i', 
-        '$': 's', '7': 't', '(': 'c', '[': 'c', '{': 'c', '©': 'c', 
-        '|)': 'd', '|>': 'd', 'cl': 'd', 'v': 'v', '×': 'x'
-    }
-    for char, replacement in mapping.items():
+    # 2. Apply character mapping for Leet Speak and symbols
+    for char, replacement in CHARACTER_MAP.items():
         text = text.replace(char, replacement)
         
-        text = ''.join(c for c in unicodedata.normalize('NFD', text) if unicodedata.category(c) != 'Mn')
+    # 3. Strip Diacritics/Glitch marks (Zalgo text)
+    # NFD decomposes characters, 'Mn' category refers to non-spacing marks (accents/glitches)
+    text = ''.join(
+        c for c in unicodedata.normalize('NFD', text) 
+        if unicodedata.category(c) != 'Mn'
+    )
     
-        clean_text = re.sub(r'[^a-z]', '', text)
+    # 4. Regex: Remove everything except basic lowercase letters (a-z)
+    # This collapses strings like "d.a.r.k" or "d-a-r-k" into "dark"
+    clean_text = re.sub(r'[^a-z]', '', text)
     
     return clean_text
 
 def is_dark_user(user):
-    """সবচেয়ে অ্যাডভান্সড চেকিং: যেকোনো অবস্থায় 'dark' থাকলে ট্রু রিটার্ন করবে।"""
-    # ইউজারের ডাটাবেস বা মেসেজ থেকে প্রাপ্ত নাম ও ইউজারনেম এক করা
-    data_to_scan = f"{user.first_name or ''} {user.last_name or ''} {user.username or ''}"
+    """
+    Checks if the word 'dark' exists anywhere in the user's identity 
+    after passing through the advanced cleaning algorithm.
+    """
+    # Combine first name, last name, and username for a full identity scan
+    identity_string = f"{user.first_name or ''} {user.last_name or ''} {user.username or ''}"
     
-    # ক্লিনিং অ্যালগরিদম চালানো
-    processed_text = advanced_cleaner(data_to_scan)
+    # Process the identity through the advanced cleaner
+    clean_identity = advanced_cleaner(identity_string)
     
-    # চেক করা (এমনকি d.4.r.k বা |)ark থাকলেও এটি এখন কাজ করবে)
-    return "dark" in processed_text
+    # Final check for the keyword
+    return "dark" in clean_identity
 # --- MILESTONE LOGIC ---
 async def handle_coin_update(client, chat_id, user, amt_added):
     """
