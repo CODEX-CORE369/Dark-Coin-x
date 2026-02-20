@@ -45,7 +45,7 @@ INIT_SUDO = [6366113192, 6703335929, 6737589257]
 # --- HELPERS ---
 def keep_alive_ping():
     # এখানে তোমার Render এর URL টা বসাবে
-    URL = "https://dark-coin-x-kp3q.onrender.com" 
+    URL = "https://dark-coin-x-ojsz.onrender.com" 
     while True:
         try:
             requests.get(URL)
