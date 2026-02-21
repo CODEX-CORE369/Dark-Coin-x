@@ -4,10 +4,8 @@ import re
 import time
 import requests
 import unicodedata
-import re
 import io
-from datetime import datetime
-from datetime import timedelta
+from datetime import datetime, timedelta
 from threading import Thread
 from flask import Flask
 from pymongo import MongoClient
@@ -20,8 +18,9 @@ API_HASH = "6fc0ea1c8dacae05751591adedc177d7"
 BOT_TOKEN = "8513850569:AAHCsKyy1nWTYVKH_MtbW8IhKyOckWLTEDA"
 B = "ᴅx"
 OWNER_ID = 6703335929
-# The username of the allowed group (without @)
-ALLOWED_GROUP_USERNAME = "Dark_Zone_x" 
+
+# Multiple allowed group usernames can be added here
+ALLOWED_GROUP_USERNAMES = ["Dark_Zone_x", "Another_Group_Here"]
 
 # --- DATABASE ---
 MONGO_URL = "mongodb+srv://shadowur6_db_user:8AIIxZUjpanaQBjh@dx-codex.fmqcovu.mongodb.net/?retryWrites=true&w=majority&appName=Dx-codex"
@@ -44,15 +43,17 @@ INIT_SUDO = [6366113192, 6703335929, 6737589257]
 
 # --- HELPERS ---
 def keep_alive_ping():
-    # এখানে তোমার Render এর URL টা বসাবে
-    URL = "https://dark-coin-x-ojsz.onrender.com" 
+    # Modified to support Render external URL dynamically
+    port = int(os.environ.get('PORT', 8080))
+    URL = os.environ.get('RENDER_EXTERNAL_URL', f"http://localhost:{port}")
+    
     while True:
         try:
             requests.get(URL)
-            print(f"[{B}] Pinging server to stay awake...")
+            print(f"[{B}] Pinging server ({URL}) to stay awake...")
         except Exception as e:
             print(f"[{B}] Ping failed: {e}")
-        time.sleep(300) # ৩০০ সেকেন্ড মানে ৫ মিনিট
+        time.sleep(300)
 
 async def check_sudo(user_id):
     if user_id in INIT_SUDO or user_id == OWNER_ID: return True
@@ -64,15 +65,33 @@ def get_mention(user_id, name):
     return f"<a href='tg://user?id={user_id}'>{name[:15]}</a>"
 
 def get_rank_info(coins):
-    # Ranks based on total value (logic adapted so deducted users still keep rank if designed)
     if coins >= 400: return ("💎", "💎💎💎", "ᴄᴏᴅᴇ ᴏᴡɴᴇʀ")
     elif coins >= 200: return ("🌟🌟🌟", "⭐⭐⭐", "ᴀᴅ/ʀᴜʟᴇʀ")
     elif coins >= 100: return ("🌟🌟", "⭐⭐", "ʜ-ᴄᴀᴘᴛᴀɪɴ")
     elif coins >= 50: return ("🌟", "⭐", "ᴅᴇs-ɴᴀᴍᴇ")
     return ("⚪️", "🌑", "ᴍᴇᴍʙᴇʀ")
 
+# Advanced Rank Algorithm (Points based - Lower rank_score is better)
+def get_rank_deduction(amount):
+    if amount == 20: return 20
+    elif amount == 10: return 5
+    elif amount == 5: return 3
+    elif amount == 1: return 1
+    else: return max(1, amount // 2)
+
+def update_user_rank(user_id, amount_added):
+    user = users_col.find_one({"user_id": user_id})
+    if not user: return
+    current_rank = user.get("rank_score", 1000)
+    deduction = get_rank_deduction(amount_added)
+    
+    # 1 is the absolute highest rank mathematically, cannot go lower
+    new_rank = max(1, current_rank - deduction)
+    users_col.update_one({"user_id": user_id}, {"$set": {"rank_score": new_rank}})
+
 def sync_data(user):
     if not user: return
+    now = time.time()
     users_col.update_one(
         {"user_id": user.id},
         {"$set": {"full_name": f"{user.first_name} {user.last_name or ''}".strip(), "username": user.username},
@@ -81,8 +100,10 @@ def sync_data(user):
              "vault": 0, 
              "last_claim": 0, 
              "is_sudo": 0,
-             "deducted_50": 0, # Track if 50 coins were deducted
-             "is_banned": 0
+             "deducted_50": 0,
+             "is_banned": 0,
+             "rank_score": 1000,           # New rank score base
+             "vault_last_calc": now        # To track 7-day passive income
          }},
         upsert=True
     )
@@ -92,21 +113,16 @@ async def del_cmd(message):
     except: pass
 
 async def get_target_user(client, message, parts):
-    # Priority 1: Reply
     if message.reply_to_message: 
         return message.reply_to_message.from_user
-    # Priority 2: Mention or ID in args
     if len(parts) > 1:
-        u_input = parts[1] # Check the second word
-        # If it's a number (ID)
+        u_input = parts[1]
         if u_input.isdigit(): 
             try: return await client.get_users(int(u_input))
             except: pass
-        # If it's a username (@user)
         if u_input.startswith("@"):
             try: return await client.get_users(u_input)
             except: pass
-        # Sometimes user puts command amount user, handle flexibility
         if len(parts) > 2:
             u_input_2 = parts[2]
             if u_input_2.isdigit() or u_input_2.startswith("@"):
@@ -114,11 +130,6 @@ async def get_target_user(client, message, parts):
                 except: pass
     return None
 
-import unicodedata
-import re
-
-# Character mapping to handle Leet Speak and visual substitutes
-# Moving this outside the function prevents the 'UnboundLocalError' and improves speed
 CHARACTER_MAP = {
     '0': 'o', '4': 'a', '@': 'a', '8': 'b', '3': 'e', '1': 'i', '!': 'i', 
     '$': 's', '7': 't', '(': 'c', '[': 'c', '{': 'c', '©': 'c', 
@@ -126,51 +137,22 @@ CHARACTER_MAP = {
 }
 
 def advanced_cleaner(text):
-    """
-    Advanced cleaning algorithm: Handles stylized fonts, glitch text (Zalgo), 
-    symbol replacements, and hidden characters.
-    """
-    if not text:
-        return ""
-    
-    # 1. Normalize stylized fonts (e.g., ᴅᴀʀᴋ, 𝖉𝖆𝖗𝖐, 𝓭𝓪𝓻𝓴) to standard Latin
+    if not text: return ""
     text = unicodedata.normalize('NFKC', text).lower()
-    
-    # 2. Apply character mapping for Leet Speak and symbols
     for char, replacement in CHARACTER_MAP.items():
         text = text.replace(char, replacement)
-        
-    # 3. Strip Diacritics/Glitch marks (Zalgo text)
-    # NFD decomposes characters, 'Mn' category refers to non-spacing marks (accents/glitches)
-    text = ''.join(
-        c for c in unicodedata.normalize('NFD', text) 
-        if unicodedata.category(c) != 'Mn'
-    )
-    
-    # 4. Regex: Remove everything except basic lowercase letters (a-z)
-    # This collapses strings like "d.a.r.k" or "d-a-r-k" into "dark"
-    clean_text = re.sub(r'[^a-z]', '', text)
-    
-    return clean_text
+    text = ''.join(c for c in unicodedata.normalize('NFD', text) if unicodedata.category(c) != 'Mn')
+    return re.sub(r'[^a-z]', '', text)
 
 def is_dark_user(user):
-    """
-    Checks if the word 'dark' exists anywhere in the user's identity 
-    after passing through the advanced cleaning algorithm.
-    """
-    # Combine first name, last name, and username for a full identity scan
     identity_string = f"{user.first_name or ''} {user.last_name or ''} {user.username or ''}"
-    
-    # Process the identity through the advanced cleaner
     clean_identity = advanced_cleaner(identity_string)
-    
-    # Final check for the keyword
     return "dark" in clean_identity
+
 # --- MILESTONE LOGIC ---
 async def handle_coin_update(client, chat_id, user, amt_added):
-    """
-    Handles coin addition, 50 coin deduction, and congratulations.
-    """
+    if amt_added <= 0: return # Block negative bugs completely
+    
     user_id = user.id
     user_db = users_col.find_one({"user_id": user_id})
     if not user_db: return
@@ -178,20 +160,38 @@ async def handle_coin_update(client, chat_id, user, amt_added):
     old_coins = user_db.get("coins", 0)
     deducted_flag = user_db.get("deducted_50", 0)
     
-    # Tentative new balance
     new_coins_temp = old_coins + amt_added
     
-    # 1. Check for 50 Coin Milestone (First Time Only)
+    # 1. Check for 1000 Coin Auto-Reset (New Algorithm)
+    if new_coins_temp >= 1000:
+        users_col.update_one(
+            {"user_id": user_id},
+            {"$set": {"coins": 10, "rank_score": 1000}} # Resets to 10
+        )
+        try:
+            m = get_mention(user_id, user.first_name)
+            msg = (
+                f"<b>┏━━「 🔄 ᴀᴄᴄᴏᴜɴᴛ ʀᴇsᴇᴛ 」━━┓</b>\n"
+                f"<b>┃ 👤 ᴜsᴇʀ: {m}</b>\n"
+                f"<b>┃ ⚠️ ɪɴғᴏ: 1000 ᴄᴏɪɴs ʀᴇᴀᴄʜᴇᴅ!</b>\n"
+                f"<b>┃ 🔄 ᴀᴄᴛɪᴏɴ: ᴀᴄᴄᴏᴜɴᴛ ʀᴇsᴇᴛ ᴛᴏ 10 ᴄᴏɪɴs</b>\n"
+                f"<b>┗━━━━━━━━━━━━━━━━━━┛</b>"
+            )
+            sent = await client.send_message(chat_id, msg)
+            await sent.pin(both_sides=True)
+        except: pass
+        return
+
+    # Update dynamic rank based on amount added
+    update_user_rank(user_id, amt_added)
+
+    # 2. Check for 50 Coin Milestone
     if deducted_flag == 0 and new_coins_temp >= 50:
-        # User reached 50 for first time. 
-        # Logic: Deduct 50, set flag = 1.
         final_coins = new_coins_temp - 50
-        
         users_col.update_one(
             {"user_id": user_id},
             {"$set": {"coins": final_coins, "deducted_50": 1}}
         )
-        
         m = get_mention(user_id, user.first_name)
         msg = (
             f"<b>┏━━「 🎉 ᴄᴏɴɢʀᴀᴛᴜʟᴀᴛɪᴏɴs 」━━┓</b>\n"
@@ -205,20 +205,17 @@ async def handle_coin_update(client, chat_id, user, amt_added):
             sent = await client.send_message(chat_id, msg)
             await sent.pin(both_sides=True)
         except: pass
-        return # Exit to avoid double congrats
+        return
         
     else:
-        # Regular update
         users_col.update_one({"user_id": user_id}, {"$set": {"coins": new_coins_temp}})
         final_coins = new_coins_temp
 
-    # 2. Check for other Rank Ups (100, 200, 400)
-    # We compare badges
+    # 3. Check for Rank Ups
     old_badge, _, _ = get_rank_info(old_coins)
     new_badge, stars, r_name = get_rank_info(final_coins)
 
     if new_badge != old_badge and final_coins > old_coins:
-        # Only congrats if they went UP a tier (not down) and it's a major tier
         if final_coins >= 100: 
             m = get_mention(user_id, user.first_name)
             msg = (
@@ -236,13 +233,13 @@ async def handle_coin_update(client, chat_id, user, amt_added):
 # --- GROUP RESTRICTION ---
 @app.on_message(filters.group, group=-2)
 async def check_group(client, message):
-    """Ensures bot leaves unauthorized groups."""
-    if message.chat.username != ALLOWED_GROUP_USERNAME:
+    if message.chat.username not in ALLOWED_GROUP_USERNAMES:
         try:
+            groups_str = ", ".join([f"@{g}" for g in ALLOWED_GROUP_USERNAMES])
             await message.reply(
                 f"<b>┏━━「 🚫 ʟᴇᴀᴠɪɴɢ 」━━┓</b>\n"
                 f"<b>┃ ⚠️ ᴀʟᴇʀᴛ: ᴡʀᴏɴɢ ᴢᴏɴᴇ</b>\n"
-                f"<b>┃ 🛡️ ᴏɴʟʏ ғᴏʀ: @{ALLOWED_GROUP_USERNAME}</b>\n"
+                f"<b>┃ 🛡️ ᴏɴʟʏ ғᴏʀ: {groups_str[:25]}...</b>\n"
                 f"<b>┗━━━━━━━━━━━━━━┛</b>"
             )
             await client.leave_chat(message.chat.id)
@@ -266,35 +263,31 @@ async def ban_filter(client, message):
         message.stop_propagation()
 
 # --- ADMIN COMMANDS ---
-
 @app.on_message(filters.command(["acoin", "mcoin"]))
 async def manage_coin(client, message):
     if not await check_sudo(message.from_user.id): 
         return await del_cmd(message)
     
-    cmd = message.command[0] # acoin or mcoin
+    cmd = message.command[0]
     parts = message.text.split()
     target = await get_target_user(client, message, parts)
     
-    # Try to find amount in parts
     amount = 0
     for p in parts:
-        if p.isdigit():
-            amount = int(p)
+        # Avoid bugs by checking if it contains digits or minus sign
+        if p.isdigit() or (p.startswith("-") and p[1:].isdigit()):
+            amount = abs(int(p)) # Force positive integer reading
             break
             
     m_admin = get_mention(message.from_user.id, message.from_user.first_name)
     
-    if not target: 
-        return await message.reply(f"<b>⚠️ {m_admin}, ᴜsᴇʀ ɴᴏᴛ ғᴏᴜɴᴅ!</b>")
-    if amount == 0:
-        return await message.reply(f"<b>⚠️ {m_admin}, ᴇɴᴛᴇʀ ᴀᴍᴏᴜɴᴛ!</b>")
+    if not target: return await message.reply(f"<b>⚠️ {m_admin}, ᴜsᴇʀ ɴᴏᴛ ғᴏᴜɴᴅ!</b>")
+    if amount == 0: return await message.reply(f"<b>⚠️ {m_admin}, ᴇɴᴛᴇʀ ᴀᴍᴏᴜɴᴛ!</b>")
 
     sync_data(target)
     
     if cmd == "acoin":
         await handle_coin_update(client, message.chat.id, target, amount)
-        # Fetch updated data for display
         u_data = users_col.find_one({"user_id": target.id})
         await message.reply(
             f"<b>┏━━「 ✅ ᴀᴅᴅᴇᴅ 」━━┓</b>\n"
@@ -306,6 +299,10 @@ async def manage_coin(client, message):
         )
         
     elif cmd == "mcoin":
+        u_data = users_col.find_one({"user_id": target.id})
+        # Prevent going below zero
+        if u_data['coins'] < amount: amount = u_data['coins'] 
+        
         users_col.update_one({"user_id": target.id}, {"$inc": {"coins": -amount}})
         u_data = users_col.find_one({"user_id": target.id})
         await message.reply(
@@ -317,18 +314,41 @@ async def manage_coin(client, message):
             f"<b>┗━━━━━━━━━━━━━━┛</b>"
         )
 
-@app.on_message(filters.command(["cban", "cunban"]))
-async def ban_system(client, message):
+# NEW: Admin Manual Reset Command
+@app.on_message(filters.command("reset"))
+async def reset_user(client, message):
     if not await check_sudo(message.from_user.id): 
         return await del_cmd(message)
     
-    cmd = message.command[0]
     parts = message.text.split()
     target = await get_target_user(client, message, parts)
     m_admin = get_mention(message.from_user.id, message.from_user.first_name)
 
     if not target: 
         return await message.reply(f"<b>⚠️ {m_admin}, ᴜsᴇʀ ɴᴏᴛ ғᴏᴜɴᴅ!</b>")
+
+    users_col.update_one(
+        {"user_id": target.id}, 
+        {"$set": {"coins": 0, "vault": 0, "rank_score": 1000, "deducted_50": 0}}
+    )
+    
+    await message.reply(
+        f"<b>┏━━「 🔄 ʀᴇsᴇᴛ sᴜᴄᴄᴇss 」━━┓</b>\n"
+        f"<b>┃ 👤 ᴀᴅᴍɪɴ: {m_admin}</b>\n"
+        f"<b>┃ 👤 ᴜsᴇʀ: {get_mention(target.id, target.first_name)}</b>\n"
+        f"<b>┃ ⚠️ sᴛᴀᴛᴜs: ᴀᴄᴄᴏᴜɴᴛ ᴡɪᴘᴇᴅ</b>\n"
+        f"<b>┗━━━━━━━━━━━━━━━┛</b>"
+    )
+
+@app.on_message(filters.command(["cban", "cunban"]))
+async def ban_system(client, message):
+    if not await check_sudo(message.from_user.id): return await del_cmd(message)
+    cmd = message.command[0]
+    parts = message.text.split()
+    target = await get_target_user(client, message, parts)
+    m_admin = get_mention(message.from_user.id, message.from_user.first_name)
+
+    if not target: return await message.reply(f"<b>⚠️ {m_admin}, ᴜsᴇʀ ɴᴏᴛ ғᴏᴜɴᴅ!</b>")
     if target.id in INIT_SUDO or target.id == OWNER_ID:
         return await message.reply(f"<b>❌ {m_admin}, ᴄᴀɴɴᴏᴛ ʙᴀɴ sᴜᴅᴏ!</b>")
 
@@ -355,41 +375,26 @@ async def ban_system(client, message):
 
 # --- USER COMMANDS ---
 
-
 @app.on_message(filters.command("data") & (filters.group | filters.private))
 async def data_handler(client, message):
-    # 1. Sudo Check
-    if not await check_sudo(message.from_user.id):
-        return await del_cmd(message)
+    if not await check_sudo(message.from_user.id): return await del_cmd(message)
 
     parts = message.text.split()
-    # Check if target is specified (Reply, ID, or Username)
     target = await get_target_user(client, message, parts)
 
-    # --- CASE 1: SPECIFIC USER DATA ---
     if target or (len(parts) > 1 and not parts[1].isdigit()):
-        # If get_target_user failed but there's input, target might be invalid
-        if not target:
-            return await message.reply("<b>⚠️ ᴜsᴇʀ ɴᴏᴛ ғᴏᴜɴᴅ!</b>")
+        if not target: return await message.reply("<b>⚠️ ᴜsᴇʀ ɴᴏᴛ ғᴏᴜɴᴅ!</b>")
 
         u_db = users_col.find_one({"user_id": target.id})
-        m_admin = get_mention(message.from_user.id, message.from_user.first_name)
-        
-        # UI/UX Strings
         if u_db:
             badge, stars, r_name = get_rank_info(u_db.get('coins', 0))
             status = "🔴 ʙᴀɴɴᴇᴅ" if u_db.get("is_banned", 0) == 1 else "🟢 ᴜɴʙᴀɴɴᴇᴅ"
             pocket = u_db.get('coins', 0)
             vault = u_db.get('vault', 0)
-            # Date can be formatted from last_claim or current
             date_str = datetime.now().strftime("%d-%m-%Y")
         else:
-            # Fallback for non-DB users
             badge, stars, r_name = ("⚪️", "🌑", "ɴᴏᴛ ɪɴ ᴅʙ")
-            status = "🟢 ᴜɴʙᴀɴɴᴇᴅ"
-            pocket = 0
-            vault = 0
-            date_str = "ɴ/ᴀ"
+            status, pocket, vault, date_str = ("🟢 ᴜɴʙᴀɴɴᴇᴅ", 0, 0, "ɴ/ᴀ")
 
         caption = (
             f"<b>┏━━「 👤 ᴜsᴇʀ ɪɴғᴏ 」━━┓</b>\n"
@@ -406,19 +411,13 @@ async def data_handler(client, message):
             f"<b>┃ ᴅᴀᴛᴇ: {date_str}</b>\n"
             f"<b>┗━━━━━━━━━━━━━━┛</b>"
         )
-
         try:
-            # Try to get profile photo
             photos = [p async for p in client.get_chat_photos(target.id, limit=1)]
-            if photos:
-                await message.reply_photo(photos[0].file_id, caption=caption)
-            else:
-                await message.reply(caption)
-        except:
-            await message.reply(caption)
+            if photos: await message.reply_photo(photos[0].file_id, caption=caption)
+            else: await message.reply(caption)
+        except: await message.reply(caption)
         return
 
-    # --- CASE 2: ALL USERS TXT GENERATION ---
     await del_cmd(message)
     status_msg = await message.reply("<b>⏳ ɢᴇɴᴇʀᴀᴛɪɴɢ ᴅᴀᴛᴀ ғɪʟᴇ...</b>")
     
@@ -426,8 +425,7 @@ async def data_handler(client, message):
     total_users = len(all_users)
     banned_users = users_col.count_documents({"is_banned": 1})
     
-    output = f"TOTAL USERS: {total_users}\nBANNED USERS: {banned_users}\n"
-    output += "="*30 + "\n\n"
+    output = f"TOTAL USERS: {total_users}\nBANNED USERS: {banned_users}\n" + "="*30 + "\n\n"
     
     for u in all_users:
         u_id = u.get("user_id")
@@ -439,70 +437,52 @@ async def data_handler(client, message):
         badge, stars, _ = get_rank_info(coins)
         
         output += (
-            f"ᴜɪᴅ: {u_id}\n"
-            f"ɴᴀᴍᴇ: {name}\n"
-            f"ᴜsᴇʀ: @{uname}\n"
-            f"ᴘᴏᴄᴋᴇᴛ: {coins}\n"
-            f"ᴠᴀᴜʟᴛ: {vault}\n"
-            f"ʙᴀᴅɢᴇ: {badge}\n"
-            f"sᴛᴀʀs: {stars}\n"
-            f"sᴛᴀᴛᴜs: {is_ban}\n"
-            f"ᴅᴀᴛᴇ: {datetime.now().strftime('%Y-%m-%d')}\n"
-            f"{'-'*20}\n"
+            f"ᴜɪᴅ: {u_id}\nɴᴀᴍᴇ: {name}\nᴜsᴇʀ: @{uname}\n"
+            f"ᴘᴏᴄᴋᴇᴛ: {coins}\nᴠᴀᴜʟᴛ: {vault}\nʙᴀᴅɢᴇ: {badge}\n"
+            f"sᴛᴀʀs: {stars}\nsᴛᴀᴛᴜs: {is_ban}\n"
+            f"ᴅᴀᴛᴇ: {datetime.now().strftime('%Y-%m-%d')}\n{'-'*20}\n"
         )
 
-    # Use io.BytesIO to create file in memory
     f = io.BytesIO(output.encode())
     f.name = f"DX_Users_Data_{datetime.now().strftime('%d_%m')}.txt"
-    
-    caption = (
-        f"<b>┏━━「 📂 ᴅᴀᴛᴀʙᴀsᴇ ᴇxᴘᴏʀᴛ 」━━┓</b>\n"
-        f"<b>┃ 📊 ᴛᴏᴛᴀʟ: {total_users}</b>\n"
-        f"<b>┃ 🚫 ʙᴀɴɴᴇᴅ: {banned_users}</b>\n"
-        f"<b>┃ 🛡️ ᴀᴅᴍɪɴ: {get_mention(message.from_user.id, message.from_user.first_name)}</b>\n"
-        f"<b>┗━━━━━━━━━━━━━━┛</b>"
-    )
-    
+    caption = (f"<b>┏━━「 📂 ᴅᴀᴛᴀʙᴀsᴇ ᴇxᴘᴏʀᴛ 」━━┓</b>\n"
+               f"<b>┃ 📊 ᴛᴏᴛᴀʟ: {total_users}</b>\n"
+               f"<b>┃ 🚫 ʙᴀɴɴᴇᴅ: {banned_users}</b>\n"
+               f"<b>┃ 🛡️ ᴀᴅᴍɪɴ: {get_mention(message.from_user.id, message.from_user.first_name)}</b>\n"
+               f"<b>┗━━━━━━━━━━━━━━┛</b>")
     await client.send_document(message.chat.id, f, caption=caption)
     await status_msg.delete()
 
 @app.on_message(filters.command("claim") & filters.group)
 async def daily_claim(client, message):
-    # Only this command doesn't delete immediately if successful, but logic says delete and reply
     m = get_mention(message.from_user.id, message.from_user.first_name)
     user = users_col.find_one({"user_id": message.from_user.id})
     
-    # 1. Check Name
     if not is_dark_user(message.from_user):
-        await del_cmd(message) # Delete user message
-        await message.reply(
+        await del_cmd(message)
+        return await message.reply(
             f"<b>┏━━「 ⚠️ ᴀᴄᴄᴇss ᴅᴇɴɪᴇᴅ 」━━┓</b>\n"
             f"<b>┃ 👤 ᴜsᴇʀ: {m}</b>\n"
             f"<b>┃ ❌ ᴇʀʀᴏʀ: ɴᴏᴛ ᴀ ᴅᴀʀᴋ ᴜsᴇʀ</b>\n"
             f"<b>┃ 💡 ɪɴғᴏ: ғᴏʀ 'ᴅᴀʀᴋ' ʙʀᴏᴛʜᴇʀs ᴏɴʟʏ</b>\n"
             f"<b>┗━━━━━━━━━━━━━━━━┛</b>"
         )
-        return
 
-    # 2. Check Time
     now = time.time()
     if now - user.get("last_claim", 0) < 259200:
         await del_cmd(message)
         rem = 259200 - (now - user.get("last_claim", 0))
-        await message.reply(
+        return await message.reply(
             f"<b>┏━━「 ⏳ ᴄᴏᴏʟᴅᴏᴡɴ 」━━┓</b>\n"
             f"<b>┃ 👤 ᴜsᴇʀ: {m}</b>\n"
             f"<b>┃ 🕒 ᴡᴀɪᴛ: {str(timedelta(seconds=int(rem)))}</b>\n"
             f"<b>┗━━━━━━━━━━━━━━┛</b>"
         )
-        return
 
-    # 3. Add Coin (uses helper for 50 deduction logic)
     await del_cmd(message)
     users_col.update_one({"user_id": message.from_user.id}, {"$set": {"last_claim": now}})
     await handle_coin_update(client, message.chat.id, message.from_user, 1)
     
-    # Reply success
     await message.reply(
         f"<b>┏━━「 ✅ ᴄʟᴀɪᴍᴇᴅ 」━━┓</b>\n"
         f"<b>┃ 👤 ᴜsᴇʀ: {m}</b>\n"
@@ -538,11 +518,11 @@ async def check_stats(client, message):
     user = users_col.find_one({"user_id": target.id})
     badge, stars, rank_n = get_rank_info(user['coins'])
     
-    # Rank calc
-    g_rank = users_col.count_documents({"coins": {"$gt": user['coins']}}) + 1
-    m = get_mention(target.id, target.first_name)
+    # Calculate Leaderboard position by sorting 'rank_score' Ascending
+    user_rank_score = user.get('rank_score', 1000)
+    g_rank = users_col.count_documents({"rank_score": {"$lt": user_rank_score}}) + 1
     
-    # Check if they are a 'Star' (deducted status or high coins)
+    m = get_mention(target.id, target.first_name)
     star_status = "✨ ᴠᴇʀɪғɪᴇᴅ" if user.get("deducted_50") == 1 else "❌ ɴᴏᴛ ʏᴇᴛ"
     
     await message.reply_text(
@@ -552,7 +532,7 @@ async def check_stats(client, message):
         f"<b>┣━━━━━━━━━━</b>\n"
         f"<b>┃ 💰 ᴘᴏᴄᴋᴇᴛ: {user['coins']}</b>\n"
         f"<b>┃ 🏦 ᴠᴀᴜʟᴛ: {user.get('vault', 0)}</b>\n"
-        f"<b>┃ 🏆 ʀᴀɴᴋ: #{g_rank}</b>\n"
+        f"<b>┃ 🏆 ʀᴀɴᴋ: #{g_rank} </b> (P: {user_rank_score})\n"
         f"<b>┃ 🎖️ ʙᴀᴅɢᴇ: {badge} ({rank_n})</b>\n"
         f"<b>┃ ⭐ sᴛᴀʀs: {stars}</b>\n"
         f"<b>┃ 🧿 sᴛᴀᴛᴜs: {star_status}</b>\n"
@@ -562,7 +542,8 @@ async def check_stats(client, message):
 @app.on_message(filters.command("ctop") & filters.group)
 async def leaderboard(client, message):
     await del_cmd(message)
-    rows = list(users_col.find().sort("coins", -1).limit(10))
+    # Changed algorithm: sorted by lowest rank_score first, then highest coins
+    rows = list(users_col.find().sort([("rank_score", 1), ("coins", -1)]).limit(10))
     board = f"<b>┏━━「 🏆 ᴛᴏᴘ ʀɪᴄʜᴇsᴛ 」━━┓</b>\n"
     for i, row in enumerate(rows, 1):
         icon = "🥇" if i==1 else "🥈" if i==2 else "🥉" if i==3 else f"<b>{i}.</b>"
@@ -576,10 +557,9 @@ async def leaderboard(client, message):
 @app.on_message(filters.command("star") & filters.group)
 async def star_list(client, message):
     await del_cmd(message)
-    # Stars are people who have coins >= 50 OR have had 50 deducted
     stars = users_col.find({
         "$or": [{"coins": {"$gte": 50}}, {"deducted_50": 1}]
-    }).sort("coins", -1).limit(15)
+    }).sort([("rank_score", 1), ("coins", -1)]).limit(15)
     
     text = f"<b>┏━━「 🌟 sᴛᴀʀ ʜᴏʟᴅᴇʀs 」━━┓</b>\n"
     count = 0
@@ -600,20 +580,21 @@ async def gift_coin(client, message):
     if len(parts) < 2: return await message.reply(f"<b>⚠️ {m}, ᴀᴍᴏᴜɴᴛ?</b>")
     try: amt = int(parts[1])
     except: return
-    target = await get_target_user(client, message, parts)
     
-    await del_cmd(message) # Delete command
+    await del_cmd(message)
+    
+    # Check for negative logic 
+    if amt <= 0: return await message.reply(f"<b>❌ {m}, ɪɴᴠᴀʟɪᴅ ᴀᴍᴏᴜɴᴛ!</b>")
+        
+    target = await get_target_user(client, message, parts)
     
     if not target or target.id == message.from_user.id: 
         return await message.reply(f"<b>❌ {m}, ɪɴᴠᴀʟɪᴅ ᴜsᴇʀ!</b>")
     
     sender = users_col.find_one({"user_id": message.from_user.id})
     if sender and sender['coins'] >= amt:
-        # Deduct from sender
         users_col.update_one({"user_id": message.from_user.id}, {"$inc": {"coins": -amt}})
-        # Add to receiver (using helper to check for 50 coin logic)
         await handle_coin_update(client, message.chat.id, target, amt)
-        
         await message.reply(f"<b>┏━━「 💸 sᴇɴᴛ 」━━┓\n┃ 👤 ғʀᴏᴍ: {m}\n┃ 👤 ᴛᴏ: {get_mention(target.id, target.first_name)}\n┃ 💰 ᴀᴍᴛ: {amt}\n┗━━━━━━━━━━┛</b>")
     else: await message.reply(f"<b>❌ {m}, ɴᴏᴛ ᴇɴᴏᴜɢʜ!</b>")
 
@@ -621,12 +602,35 @@ async def gift_coin(client, message):
 async def vault_handler(client, message):
     await del_cmd(message)
     m = get_mention(message.from_user.id, message.from_user.first_name)
+    
+    # --- Passive Vault Income Engine (Every 7 days adds 1 coin) ---
+    sync_data(message.from_user) 
     user = users_col.find_one({"user_id": message.from_user.id})
+    
+    last_calc = user.get('vault_last_calc', time.time())
+    now = time.time()
+    elapsed_days = (now - last_calc) / (24 * 3600)
+    
+    if elapsed_days >= 7:
+        weeks_passed = int(elapsed_days // 7)
+        added_coins = weeks_passed * 1
+        new_vault = user.get('vault', 0) + added_coins
+        new_calc = last_calc + (weeks_passed * 7 * 24 * 3600)
+        
+        users_col.update_one(
+            {"user_id": message.from_user.id}, 
+            {"$set": {"vault": new_vault, "vault_last_calc": new_calc}}
+        )
+        user['vault'] = new_vault # Update var for UI 
+    # -------------------------------------------------------------
+
     parts = message.text.split()
     if len(parts) == 1:
         return await message.reply(f"<b>┏━━「 🏦 ᴠᴀᴜʟᴛ 」━━┓\n┃ 👤 ᴜsᴇʀ: {m}\n┃ 💰 sᴀᴠᴇᴅ: {user.get('vault', 0)}\n┗━━━━━━━━━━┛</b>")
     try:
         act, amt = parts[1].lower(), int(parts[2])
+        if amt <= 0: return await message.reply(f"<b>❌ {m}, ɪɴᴠᴀʟɪᴅ!</b>") # Anti-negative
+        
         if act in ["dep", "d"] and user['coins'] >= amt:
             users_col.update_one({"user_id": message.from_user.id}, {"$inc": {"coins": -amt, "vault": amt}})
             await message.reply(f"<b>✅ {m}, sᴀᴠᴇᴅ {amt}!</b>")
@@ -667,6 +671,7 @@ async def sudo_usage(client, message):
         f"<b>┣━━━━━━━━━━━━━━</b>\n"
         f"<b>┃ ➕ /acoin (ɪᴅ/@/ʀᴇᴘ) (ᴀᴍᴛ)</b>\n"
         f"<b>┃ ➖ /mcoin (ɪᴅ/@/ʀᴇᴘ) (ᴀᴍᴛ)</b>\n"
+        f"<b>┃ 🔄 /reset (ɪᴅ/@/ʀᴇᴘ) - ᴡɪᴘᴇ ᴀᴄᴄ</b>\n"
         f"<b>┃ ⛔ /cban (ɪᴅ/@/ʀᴇᴘ)</b>\n"
         f"<b>┃ 🟢 /cunban (ɪᴅ/@/ʀᴇᴘ)</b>\n"
         f"<b>┃ ⚡ /sudo (ʀᴇᴘʟʏ) - ᴀᴅᴅ</b>\n"
@@ -698,11 +703,6 @@ async def start_bot():
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    # Web server thread
     Thread(target=run_web).start()
-    
-    # Self-ping thread (Stay Awake System)
     Thread(target=keep_alive_ping, daemon=True).start()
-    
-    # Bot start
     asyncio.get_event_loop().run_until_complete(start_bot())
