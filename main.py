@@ -73,7 +73,7 @@ def get_rank_info(coins):
 
 # Advanced Rank Algorithm (Points based - Lower rank_score is better)
 def get_rank_deduction(amount):
-    if amount == 20: return 20
+    if amount == 20: return 10
     elif amount == 10: return 5
     elif amount == 5: return 3
     elif amount == 1: return 1
