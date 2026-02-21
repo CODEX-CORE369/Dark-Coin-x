@@ -20,7 +20,7 @@ B = "ᴅx"
 OWNER_ID = 6703335929
 
 # Multiple allowed group usernames can be added here
-ALLOWED_GROUP_USERNAMES = ["Dark_Zone_x", "Another_Group_Here"]
+ALLOWED_GROUP_USERNAMES = ["Dark_Zone_x", "DARK_GANG369", "Dark_gang_x"]
 
 # --- DATABASE ---
 MONGO_URL = "mongodb+srv://shadowur6_db_user:8AIIxZUjpanaQBjh@dx-codex.fmqcovu.mongodb.net/?retryWrites=true&w=majority&appName=Dx-codex"
@@ -130,24 +130,75 @@ async def get_target_user(client, message, parts):
                 except: pass
     return None
 
+# Expanded Leet Speak and visual substitute mapping
 CHARACTER_MAP = {
     '0': 'o', '4': 'a', '@': 'a', '8': 'b', '3': 'e', '1': 'i', '!': 'i', 
     '$': 's', '7': 't', '(': 'c', '[': 'c', '{': 'c', '©': 'c', 
-    '|)': 'd', '|>': 'd', 'cl': 'd', 'v': 'v', '×': 'x', 'к': 'k', 'ʀ': 'r'
+    'v': 'v', '×': 'x', 'к': 'k', 'ʀ': 'r', '∆': 'a', 'Λ': 'a', 
+    'ß': 'b', '€': 'e', '£': 'e', '#': 'h', '®': 'r', '5': 's', 
+    '+': 't', 'µ': 'u', '¥': 'y'
+}
+
+# Multi-character substitutions
+MULTI_CHAR_MAP = {
+    'cl': 'd', '|)': 'd', '|>': 'd', '|-|': 'h', '|=': 'f'
 }
 
 def advanced_cleaner(text):
-    if not text: return ""
+    """
+    Ultra-advanced cleaning algorithm: Handles Regional Indicators (Flags), 
+    Mathematical Alphanumeric fonts, Leet Speak, Zalgo, and hidden characters.
+    """
+    if not text:
+        return ""
+    
+    # 1. Handle Regional Indicators (e.g., 🇩, 🇦)
+    # Convert flag-like letters to standard lowercase letters a-z
+    cleaned_chars = []
+    for char in text:
+        code = ord(char)
+        if 127462 <= code <= 127487:  # Unicode range for regional indicators
+            cleaned_chars.append(chr(code - 127462 + 97))
+        else:
+            cleaned_chars.append(char)
+    text = ''.join(cleaned_chars)
+    
+    # 2. Normalize stylized fonts (NFKC converts 𝐀𝐑𝐊 to ARK) and lowercase
     text = unicodedata.normalize('NFKC', text).lower()
+    
+    # 3. Apply Multi-character Leet Speak replacements
+    for k, v in MULTI_CHAR_MAP.items():
+        text = text.replace(k, v)
+        
+    # 4. Apply Single-character Leet Speak mapping
     for char, replacement in CHARACTER_MAP.items():
         text = text.replace(char, replacement)
-    text = ''.join(c for c in unicodedata.normalize('NFD', text) if unicodedata.category(c) != 'Mn')
-    return re.sub(r'[^a-z]', '', text)
+        
+    # 5. Strip Diacritics/Glitch marks (Zalgo text)
+    text = ''.join(
+        c for c in unicodedata.normalize('NFD', text) 
+        if unicodedata.category(c) != 'Mn'
+    )
+    
+    # 6. Regex: Remove EVERYTHING except basic lowercase letters (a-z)
+    # This collapses strings like "d.a.r.k", "g_r_e_y", or "d a r k" into a single solid word
+    clean_text = re.sub(r'[^a-z]', '', text)
+    
+    return clean_text
 
 def is_dark_user(user):
+    """
+    Checks if the word 'dark' OR 'grey' exists anywhere in the user's identity 
+    after passing through the ultra-advanced cleaning algorithm.
+    """
+    # Combine first name, last name, and username for a full identity scan
     identity_string = f"{user.first_name or ''} {user.last_name or ''} {user.username or ''}"
+    
+    # Process the identity through the advanced cleaner
     clean_identity = advanced_cleaner(identity_string)
-    return "dark" in clean_identity
+    
+    # Final check for the keywords
+    return "dark" in clean_identity or "grey" in clean_identity
 
 # --- MILESTONE LOGIC ---
 async def handle_coin_update(client, chat_id, user, amt_added):
