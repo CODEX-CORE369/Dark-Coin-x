@@ -1,6 +1,6 @@
 pyrogram
 tgcrypto
 pymongo[srv]
-Flask
 requests
-dnspython
+flask
+gunicorn
