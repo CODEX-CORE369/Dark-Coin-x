@@ -20,7 +20,7 @@ B = "ᴅx"
 OWNER_ID = 6703335929
 
 # Multiple allowed group usernames can be added here
-ALLOWED_GROUP_USERNAMES = ["Dark_Zone_x", "DARK_GANG369", "Dark_gang_x"]
+ALLOWED_GROUP_USERNAMES = ["Dark_Zone_x", "DARK_GANG369", "Dark_gang_x", "dark_lady_369"]
 
 # --- DATABASE ---
 MONGO_URL = "mongodb+srv://shadowur6_db_user:8AIIxZUjpanaQBjh@dx-codex.fmqcovu.mongodb.net/?retryWrites=true&w=majority&appName=Dx-codex"
